@@ -19,8 +19,8 @@ Install QIIME 2 2026.7 following the [installation guide](https://library.qiime2
 
 ```bash
 conda activate rachis-qiime2-2026.7
-conda install -c conda-forge jupyterlab
-jupyter lab biom200_microbiome.ipynb
+conda install -c conda-forge notebook   # QIIME 2 2026.7 no longer bundles Jupyter
+jupyter notebook biom200_microbiome.ipynb
 ```
 
 ## Data
