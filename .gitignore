@@ -1,0 +1,6 @@
+# class data and outputs never go in the repo
+data/*
+!data/README.md
+results/
+.ipynb_checkpoints/
+__pycache__/

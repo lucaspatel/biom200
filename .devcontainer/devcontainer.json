@@ -1,0 +1,21 @@
+{
+  "name": "BIOM 200 · QIIME 2 2026.7",
+  "image": "quay.io/qiime2/qiime2:2026.7",
+  "hostRequirements": { "cpus": 2, "memory": "8gb" },
+  "containerEnv": {
+    "MPLBACKEND": "module://matplotlib_inline.backend_inline"
+  },
+  "postCreateCommand": "pip install --no-cache-dir --quiet ipykernel && python -m ipykernel install --sys-prefix --name python3 --display-name 'QIIME 2 2026.7'",
+  "customizations": {
+    "vscode": {
+      "extensions": ["ms-toolsai.jupyter", "ms-python.python"],
+      "settings": {
+        "python.defaultInterpreterPath": "/opt/miniconda3/envs/rachis-qiime2-2026.7/bin/python",
+        "jupyter.notebookFileRoot": "${workspaceFolder}"
+      }
+    },
+    "codespaces": {
+      "openFiles": ["biom200_microbiome.ipynb"]
+    }
+  }
+}
