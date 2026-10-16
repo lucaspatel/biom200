@@ -1,7 +1,10 @@
 # class data and outputs never go in the repo
 data/*
 !data/README.md
-!data/550_*
+!data/mp/
+!data/class/
+data/class/*
+!data/class/.gitkeep
 results/
 .ipynb_checkpoints/
 __pycache__/
