@@ -1,7 +1,13 @@
 # BIOM 200: Microbiome analysis with QIIME 2
 
-A notebook for analyzing the class 16S rRNA amplicon data from Qiita: taxonomic composition, rarefaction, alpha and beta diversity, PCoA and PERMANOVA, and differential abundance.
+Two notebooks for analyzing 16S rRNA amplicon data from Qiita:
 
+| Notebook | Data |
+|---|---|
+| `biom200_microbiome.ipynb` | Tutorial: composition, rarefaction, alpha and beta diversity, PCoA and PERMANOVA, differential abundance, using the bundled Moving Pictures example (`data/mp/`) |
+| `class_nasal_microbiome.ipynb` | The class's own nasal swabs (`data/class/`): left vs. right nostril, self vs. others, students vs. instructors |
+
+Both use the functions in `scripts/biom200.py`.
 ## Start
 
 [![Open in GitHub Codespaces](https://github.com/codespaces/badge.svg)](https://codespaces.new/lucaspatel/biom200?quickstart=1)
