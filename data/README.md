@@ -25,4 +25,4 @@ Reference: Caporaso et al. 2011, *Genome Biol*, https://doi.org/10.1186/gb-2011-
 | `16596_tree.nwk` | Greengenes2 phylogeny pruned to these ASVs |
 
 The remaining files (rarefied table, Faith's PD, UniFrac distances, demultiplexing statistics) are Qiita outputs kept
-for reference; the notebook computes its own. Sample labels were corrected against the plate map; see `CORRECTIONS.md`.
+for reference; the notebook computes its own. Sample labels were corrected against the lab's plate map, and participants are identified only by codes (P01–P18).
