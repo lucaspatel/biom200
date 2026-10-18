@@ -8,7 +8,6 @@
   "containerEnv": {
     "MPLBACKEND": "module://matplotlib_inline.backend_inline"
   },
-  "postCreateCommand": "pip install --no-cache-dir --quiet ipykernel && python -m ipykernel install --sys-prefix --name python3 --display-name 'QIIME 2 2026.7'",
   "customizations": {
     "vscode": {
       "extensions": [
@@ -26,7 +25,5 @@
       ]
     }
   },
-  "features": {
-    "ghcr.io/devcontainers/features/sshd:1": {}
-  }
+  "onCreateCommand": "pip install --no-cache-dir --quiet ipykernel && python -m ipykernel install --sys-prefix --name python3 --display-name 'QIIME 2 2026.7'"
 }
