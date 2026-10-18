@@ -5,8 +5,8 @@ then with every other option of each dropdown, both ends of each slider, and eac
 closed instead of shown (their PDFs are still written to figures/). Run from the repository root inside the
 QIIME 2 environment:
 
-    python tools/sweep_notebook.py class_nasal_microbiome.ipynb
-    python tools/sweep_notebook.py biom200_microbiome.ipynb --set 'TREE = None'
+    python tools/sweep_notebook.py 02_nasal-analyses.ipynb
+    python tools/sweep_notebook.py 01_introduction.ipynb --set 'TREE = None'
 
 Exits non-zero on the first error.
 """
