@@ -15,9 +15,7 @@ Included so the notebook runs end to end before you have your own data.
 Taxonomy and tree were cut from the full Greengenes2 release with `tools/prune_gg2.py`.
 Reference: Caporaso et al. 2011, *Genome Biol*, https://doi.org/10.1186/gb-2011-12-5-r50
 
-## `class/`: the class's own samples (Qiita study 16596)
-
-Not committed to the repository. Download from Qiita and upload into `data/class/`:
+## `class/`: the class's nasal swabs (Qiita study 16596)
 
 | File | Contents |
 |---|---|
@@ -26,4 +24,5 @@ Not committed to the repository. Download from Qiita and upload into `data/class
 | `16596_taxonomy.tsv` | Greengenes2 taxonomy for these ASVs |
 | `16596_tree.nwk` | Greengenes2 phylogeny pruned to these ASVs |
 
-**In a Codespace:** drag the files from your computer onto the `data/class` folder in the file explorer on the left, or right-click `data/class` → **Upload...**
+The remaining files (rarefied table, Faith's PD, UniFrac distances, demultiplexing statistics) are Qiita outputs kept
+for reference; the notebook computes its own. Sample labels were corrected against the plate map; see `CORRECTIONS.md`.

@@ -1,10 +1,9 @@
-# class data and outputs never go in the repo
+# uploads and outputs never go in the repo; the bundled example and class data do
 data/*
 !data/README.md
 !data/mp/
 !data/class/
-data/class/*
-!data/class/.gitkeep
+data/class/original/
 results/
 .ipynb_checkpoints/
 __pycache__/
