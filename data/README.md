@@ -2,13 +2,13 @@
 
 ## `mp/`: Moving Pictures of the Human Microbiome (Qiita study 550)
 
-Included so the notebook runs end to end before you have your own data.
+The tutorial notebook's example data.
 
 | File | Contents |
 |---|---|
 | `mp/550_feature-table.biom` | Deblur feature table from Qiita (16S V4, 150 nt ASVs; 1,966 samples) |
 | `mp/550_sample_information.tsv` | Sample information from Qiita |
-| `mp/550_palms_sample_information.tsv` | Left and right palm samples only; the stand-in "own samples" for the last section |
+| `mp/550_subset_feature-table.biom`, `mp/550_subset_sample_information.tsv` | Balanced subset used by the tutorial: 25 samples per person per body site (200), at least 300 reads, mislabeled samples excluded; made by `tools/subsample_mp.py` |
 | `mp/550_taxonomy.tsv` | Greengenes2 2024.09 taxonomy for these ASVs |
 | `mp/550_tree.nwk` | Greengenes2 2024.09 phylogeny pruned to these ASVs |
 
