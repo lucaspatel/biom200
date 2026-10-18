@@ -1,6 +1,6 @@
-# BIOM 200: Microbiome analysis with QIIME 2
+# BIOM 200: Microbiome analysis
 
-Repository for BIOM 200 (2026). Notebook `01_introduction.ipynb` covers an introduction to microbiome analysis with QIIME 2, using the bundled Moving Pictures example. Notebook `02_nasal-analyses.ipynb` explores the nasal microbiomes of class participants. Both use the functions in `scripts/biom200.py`.
+Repository for BIOM 200 (2026). Notebook `01_introduction.ipynb` covers an introduction to microbiome analysis, using the bundled Moving Pictures example. Notebook `02_nasal-analyses.ipynb` explores the nasal microbiomes of class participants. Both use the functions in `scripts/biom200.py`.
 
 ## Start
 
