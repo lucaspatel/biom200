@@ -17,14 +17,15 @@ import pandas as pd
 import seaborn as sns
 import skbio
 from qiime2 import Artifact, Metadata
-from qiime2.plugins import composition, diversity_lib, emperor, feature_table, phylogeny, taxa
+from qiime2.plugins import diversity_lib, emperor, feature_table, phylogeny, taxa
 from scipy import stats
+from skbio.stats.composition import ancombc
 from skbio.stats.distance import permanova
 from skbio.stats.ordination import pcoa
 
 warnings.filterwarnings("ignore", category=FutureWarning)
 RESULTS, FIGURES = Path("results"), Path("figures")
-LEVELS = {"Phylum": 2, "Class": 3, "Order": 4, "Family": 5, "Genus": 6}
+LEVELS = {"Phylum": 2, "Class": 3, "Order": 4, "Family": 5, "Genus": 6, "Species": 7}
 
 # one style for every figure
 sns.set_theme(context="notebook", style="ticks", font_scale=0.95,
@@ -77,10 +78,13 @@ def short_label(taxon):
     if "__" not in named[-1]:
         return named[-1]
     rank, name = named[-1].split("__", 1)
-    if rank == "s":
-        genus = next((r.split("__", 1)[1] for r in named if r.startswith("g__")), "")
-        return name if name.startswith(genus) else f"{genus} {name}".strip()
-    return name if rank == "g" else f"{name} ({rank}.)"
+    name = re.sub(r"_\d+\b", "", name)   # drop Greengenes2 numeric suffixes, e.g. Klebsiella_724518
+    if rank == "s" and " " not in name:    # older references give the epithet only, e.g. s__uniformis
+        genus = next((re.sub(r"_\d+\b", "", r.split("__", 1)[1]) for r in named if r.startswith("g__")), "")
+        return f"{genus} {name}".strip()
+    if rank in ("g", "s"):                 # Greengenes2 species names already start with their genus
+        return name
+    return f"{name} ({rank}.)"
 
 
 def categorical_columns(meta, group, subject, max_levels=12):
@@ -246,6 +250,25 @@ def add_composition(ds, save_qzv=False):
             str(RESULTS / ds.name / "taxa-barplot.qzv"))
 
 
+def top_taxa(ds, level="Genus", n=15, subject=None):
+    """The most abundant taxa: mean relative abundance, how many samples and subjects carry each one,
+    and in how many subjects it is the most abundant taxon (averaging each subject's samples)."""
+    subject = subject or ds.subject
+    rel = ds.rel_at[level]
+    per_subject = rel.groupby(ds.meta.loc[rel.index, subject]).mean()
+    dominant = per_subject.idxmax(axis=1).value_counts()
+    out = pd.DataFrame({
+        "mean relative abundance": rel.mean(),
+        "samples carrying it": (rel > 0).mean(),
+        f"{subject}s carrying it": (per_subject > 0).mean(),
+        f"dominant in (of {len(per_subject)} {subject}s)": dominant,
+    }).fillna({f"dominant in (of {len(per_subject)} {subject}s)": 0})
+    out = out.sort_values("mean relative abundance", ascending=False).head(n)
+    out[out.columns[-1]] = out[out.columns[-1]].astype(int)
+    out.index.name = level
+    return out.style.format({c: "{:.1%}" for c in out.columns[:3]})
+
+
 def plot_composition(ds, level="Genus", group=None, top_n=10, group_means=False):
     group = group or ds.group
     rel = ds.rel_at[level]
@@ -284,12 +307,16 @@ def explore_composition(ds):
 
 
 # ---------------------------------------------------------------------------------------------------- rarefaction
-def add_curves(ds, n_steps=12, iterations=3, seed=0):
+def add_curves(ds, n_steps=20, iterations=3, seed=0):
     """Rarefaction curves. One shuffle of a sample's reads gives a subsample without replacement at every depth
     at once: the first d reads of the shuffle. Observed features at depth d = features first seen before position d."""
     ds.counts = ds.table.view(pd.DataFrame)
     ds.depth = ds.counts.sum(axis=1)
-    steps = np.unique(np.linspace(50, np.percentile(ds.depth, 95), n_steps).astype(int))
+    hi = np.percentile(ds.depth, 95)
+    # very uneven depths: space the steps on a log scale so the low range, where curves flatten, is well sampled
+    uneven = hi / max(ds.depth.min(), 1) > 100
+    steps = np.geomspace(50, hi, n_steps) if uneven else np.linspace(50, hi, n_steps)
+    steps = np.unique(steps.astype(int))
     rng = np.random.default_rng(seed)
     curves = {}
     for sid, row in ds.counts.iterrows():
@@ -301,21 +328,33 @@ def add_curves(ds, n_steps=12, iterations=3, seed=0):
             observed += np.searchsorted(np.sort(first_seen), steps)
         curves[sid] = np.where(steps <= v.sum(), observed / iterations, np.nan)
     ds.curves = pd.DataFrame(curves, index=steps)
+    # x-axis range: twice the depth by which most curves (75th percentile) reach 80% of their own maximum
+    reach80 = [ds.curves.index[np.argmax(c.values >= 0.8 * np.nanmax(c.values))] for _, c in ds.curves.items()
+               if np.isfinite(c.values).any()]
+    ds.curves_xmax = int(min(steps.max(), 2 * np.percentile(reach80, 75)))
 
 
-def plot_rarefaction(ds, color_by=None, depth_cutoff=1000):
+def plot_rarefaction(ds, color_by=None, depth_cutoff=1000, group_means=False):
     color_by = color_by or ds.group
     pal = colors_for(ds, color_by)
     fig, (ax, ax2) = plt.subplots(1, 2, figsize=(11, 4), gridspec_kw={"width_ratios": [3, 2]})
     levels = ds.meta.loc[ds.curves.columns, color_by].astype(str)
     for lvl, c in pal.items():
         ids = levels.index[levels == lvl]
-        if len(ids):
+        if not len(ids):
+            continue
+        if group_means:
+            sub_ = ds.curves[ids]
+            sub_ = sub_[sub_.notna().mean(axis=1) >= 0.5]   # only depths that at least half the group reaches
+            ax.plot(sub_.index, sub_.mean(axis=1), color=c, lw=2, label=f"{lvl} (n={len(ids)})")
+            ax.fill_between(sub_.index, sub_.quantile(0.25, axis=1), sub_.quantile(0.75, axis=1), color=c, alpha=0.2, lw=0)
+        else:
             ax.plot(ds.curves.index, ds.curves[ids].values, color=c, alpha=0.35, lw=0.8)
-        ax.plot([], [], color=c, label=lvl)
+            ax.plot([], [], color=c, label=lvl)
+    ax.set_xlim(0, max(ds.curves_xmax, 1.2 * depth_cutoff))
     ax.axvline(depth_cutoff, color="black", ls="--", lw=1)
     ax.set_xlabel("Reads sampled"); ax.set_ylabel("Observed features"); ax.legend(title=color_by, fontsize=8)
-    ax.set_title("Rarefaction curves")
+    ax.set_title("Rarefaction curves" + (" (mean, 25th-75th percentile)" if group_means else ""))
     lost = ds.depth < depth_cutoff
     sns.histplot(x=ds.depth, hue=ds.meta[color_by].astype(str), palette=pal, multiple="stack", bins=25, ax=ax2,
                  legend=False, log_scale=bool(ds.depth.max() / max(ds.depth.min(), 1) > 100))
@@ -323,15 +362,16 @@ def plot_rarefaction(ds, color_by=None, depth_cutoff=1000):
     ax2.set_xlabel("Reads per sample")
     ax2.set_title(f"{lost.sum()} of {len(ds.depth)} samples below {depth_cutoff:,} reads")
     plt.tight_layout()
-    save_and_show(fig, ds, "rarefaction", by=color_by, depth=depth_cutoff)
+    save_and_show(fig, ds, "rarefaction", by=color_by, depth=depth_cutoff, means=group_means)
 
 
 def explore_rarefaction(ds):
     default = int(max(100, round(ds.depth.quantile(0.1), -2)))
-    ds.depth_slider = slider(100, int(min(ds.depth.max(), ds.depth.quantile(0.95) * 2)), default, "Rarefaction depth",
-                             step=100)
+    top = int(min(ds.depth.max(), max(2 * ds.curves_xmax, ds.depth.median())))
+    ds.depth_slider = slider(100, top, default, "Rarefaction depth", step=100 if top <= 50_000 else 500)
     widgets.interact(plot_rarefaction, ds=widgets.fixed(ds),
-                     color_by=dropdown(ds.categorical, ds.group, "Colour by"), depth_cutoff=ds.depth_slider)
+                     color_by=dropdown(ds.categorical, ds.group, "Colour by"), depth_cutoff=ds.depth_slider,
+                     group_means=widgets.Checkbox(value=False, description="Average by group"))
 
 
 # ---------------------------------------------------------------------------------------------------- diversity
@@ -474,6 +514,8 @@ def plot_within_between(ds, metric="bray_curtis", by=None):
     fig, ax = plt.subplots(figsize=(4.8, 4.2))
     sns.boxplot(data=df, x="pair", y="distance", order=order, color="white", width=0.5, showfliers=False, ax=ax)
     sns.stripplot(data=df[df.pair == order[0]], x="pair", y="distance", order=order, color="#4C72B0", size=5, ax=ax)
+    sns.stripplot(data=df[df.pair == order[1]], x="pair", y="distance", order=order, color="#999999", size=2.5,
+                  alpha=0.5, jitter=0.25, ax=ax)
     sub = ""
     if same.sum() and (~same).sum():
         test = stats.mannwhitneyu(d[same], d[~same], alternative="less")
@@ -508,23 +550,29 @@ def permanova_table(ds, columns=None):
     return pd.DataFrame(rows)
 
 
-def plot_pcoa(ds, metric="bray_curtis", color_by=None, axes="PC1 vs PC2", connect=None):
-    """PCoA scatter with PERMANOVA for the colour field; optionally join samples that share a value of `connect`."""
+def plot_pcoa(ds, metric="bray_curtis", color_by=None, axes="PCo1 vs PCo2", connect=None, label_points=False):
+    """PCoA scatter (equal axis scaling) with PERMANOVA for the colour field. Optionally join samples sharing a value
+    of `connect`, and label each point with its subject."""
     color_by = color_by or ds.group
     pc = ds.pcoas[metric]
-    i, j = [int(a[2:]) - 1 for a in axes.split(" vs ")]
+    i, j = [int(a[3:]) - 1 for a in axes.split(" vs ")]
     coords = pc.samples.iloc[:, [i, j]].join(ds.meta[color_by].astype(str))
     xc, yc = coords.columns[0], coords.columns[1]
     expl = pc.proportion_explained * 100
     pal = colors_for(ds, color_by)
-    fig, ax = plt.subplots(figsize=(6.2, 5))
+    fig, ax = plt.subplots(figsize=(6.2, 5.6))
     if connect:
         for _, grp_ in coords.join(ds.meta[connect].astype(str).rename("_c")).groupby("_c"):
             if len(grp_) > 1:
                 ax.plot(grp_[xc], grp_[yc], color="#BBBBBB", lw=0.8, zorder=1)
     sns.scatterplot(data=coords, x=xc, y=yc, hue=color_by, palette=pal, s=55,
                     alpha=0.85, edgecolor="white", linewidth=0.5, ax=ax, zorder=2)
-    ax.set_xlabel(f"PC{i + 1} ({expl.iloc[i]:.0f}%)"); ax.set_ylabel(f"PC{j + 1} ({expl.iloc[j]:.0f}%)")
+    if label_points:
+        for sid, row in coords.iterrows():
+            ax.annotate(str(ds.meta.loc[sid, ds.subject]), (row[xc], row[yc]), xytext=(3, 3), textcoords="offset points",
+                        fontsize=7, color="#444444")
+    ax.set_aspect("equal", adjustable="datalim")   # distances on the plot match distances between samples
+    ax.set_xlabel(f"PCo{i + 1} ({expl.iloc[i]:.0f}%)"); ax.set_ylabel(f"PCo{j + 1} ({expl.iloc[j]:.0f}%)")
     ax.set_xticks([]); ax.set_yticks([])
     res = run_permanova(ds, metric, color_by)
     sub = f"PERMANOVA by {color_by}: pseudo-F = {res[0]:.2f}, p = {res[1]:.3g}" if res else ""
@@ -534,69 +582,65 @@ def plot_pcoa(ds, metric="bray_curtis", color_by=None, axes="PC1 vs PC2", connec
     else:
         ax.legend().remove()
     save_and_show(fig, ds, "pcoa", metric=metric, by=color_by, axes=axes.replace(" vs ", "-"),
-                  **({"connect": connect} if connect else {}))
+                  **({"connect": connect} if connect else {}), **({"labels": True} if label_points else {}))
 
 
 def explore_pcoa(ds, connect=None):
     widgets.interact(plot_pcoa, ds=widgets.fixed(ds), metric=dropdown(ds.beta_metrics, "bray_curtis", "Metric"),
                      color_by=dropdown(ds.categorical, ds.group, "Colour by"),
-                     axes=dropdown(["PC1 vs PC2", "PC1 vs PC3", "PC2 vs PC3"], "PC1 vs PC2", "Axes"),
-                     connect=widgets.fixed(connect))
+                     axes=dropdown(["PCo1 vs PCo2", "PCo1 vs PCo3", "PCo2 vs PCo3"], "PCo1 vs PCo2", "Axes"),
+                     connect=widgets.fixed(connect),
+                     label_points=widgets.Checkbox(value=False, description=f"Label {ds.subject}"))
 
 
 # ---------------------------------------------------------------------------------------------------- differential abundance
-def add_differential_abundance(ds, min_prevalence=0.25, reference=None, group=None, covariates=()):
-    """ANCOM-BC on genus-level counts for `group` (default ds.group), optionally adjusting for covariates."""
+def add_differential_abundance(ds, min_prevalence=0.25, reference=None, group=None, covariates=(), pseudocount=1):
+    """ANCOM-BC (scikit-bio) on genus-level counts for `group` (default ds.group), optionally adjusting for
+    covariates such as the participant in a paired design. A pseudocount replaces zeros, which ANCOM-BC requires."""
     group = group or ds.group
     g = ds.collapsed["Genus"]
     g = g.loc[:, (g > 0).mean() >= min_prevalence]
-    g.columns = [c.replace(" ", "") for c in g.columns]
-    genus_f = Artifact.import_data("FeatureTable[Frequency]", g)
-    n_test = g.shape[1]
-    print(f"Testing {n_test} of {ds.collapsed['Genus'].shape[1]} genera for {group}"
+    levels = sorted(ds.meta[group].astype(str).unique())
+    print(f"Testing {g.shape[1]} of {ds.collapsed['Genus'].shape[1]} genera for {group}"
           + (f", adjusting for {', '.join(covariates)}" if covariates else ""))
-    if n_test < 2 or ds.meta[group].nunique() < 2:
+    ds.da_by = getattr(ds, "da_by", {})
+    if g.shape[1] < 2 or len(levels) < 2:
         print("Not enough genera or groups to test; lower min_prevalence or check the grouping field.")
-        ds.da = pd.DataFrame(columns=["taxon", "comparison", "log_fold_change", "se", "q"])
-        ds.da_by = getattr(ds, "da_by", {})
-        ds.da_by[group] = ds.da
+        ds.da = ds.da_by[group] = pd.DataFrame(columns=["taxon", "comparison", "log2_fold_change", "se", "q"])
         return
-    kwargs = {"reference_levels": [f"{group}::{reference}"]} if reference else {}
-    formula = " + ".join([group, *covariates])
-    res = composition.methods.ancombc(table=genus_f, metadata=ds.md, formula=formula, **kwargs)
-    out = RESULTS / ds.name / f"ancombc-{group}"
-    out.mkdir(parents=True, exist_ok=True)
-    composition.visualizers.da_barplot(data=res.differentials).visualization.save(str(out / "ancombc-barplot.qzv"))
-    res.differentials.export_data(out / "data")
-    part = {k: pd.read_csv(out / "data" / f"{k}_slice.csv", index_col="id") for k in ["lfc", "se", "q_val"]}
-    part = {k: v[[c for c in v.columns if c.startswith(group)]] for k, v in part.items()}   # the group's terms only
-    da = pd.concat({k: v.stack() for k, v in part.items()}, axis=1).reset_index()
-    da.columns = ["taxon", "comparison", "log_fold_change", "se", "q"]
-    ref = reference or sorted(ds.meta[group].astype(str).unique())[0]
-    da["taxon"] = da["taxon"].map(short_label)
-    da["comparison"] = da["comparison"].str.replace(group, "", regex=False) + f" vs {ref}"
+    ref = reference or levels[0]
+    term = f"C({group}, Treatment(reference='{ref}'))"
+    md = ds.meta.loc[g.index, [group, *covariates]].astype(str)
+    res = ancombc(g + pseudocount, md, " + ".join([term, *covariates]))
+    res = res.reset_index()
+    res = res[res["Covariate"].str.startswith(term)]   # the group's terms only, not the intercept or covariates
+    da = pd.DataFrame({
+        "taxon": res["FeatureID"].map(short_label).values,
+        "comparison": res["Covariate"].str.extract(r"\[T\.(.*)\]$")[0].values + f" vs {ref}",
+        "log2_fold_change": res["Log2(FC)"].values, "se": res["SE"].values, "q": res["qvalue"].values})
     dup = da.groupby("comparison")["taxon"].transform(lambda t: t.groupby(t).cumcount())
     da.loc[dup > 0, "taxon"] += " #" + (dup[dup > 0] + 1).astype(str)   # distinct lineages sharing a short name
-    ds.da = da
-    ds.da_by = getattr(ds, "da_by", {})
-    ds.da_by[group] = da
-    print(f"{(da.q < 0.05).sum()} genus–comparison pairs with q < 0.05 (Holm-adjusted)")
+    out = RESULTS / ds.name
+    out.mkdir(parents=True, exist_ok=True)
+    da.to_csv(out / f"ancombc-{group}.tsv", sep="\t", index=False)
+    ds.da = ds.da_by[group] = da
+    print(f"{(da.q < 0.05).sum()} genus–comparison pairs with q < 0.05 (Holm-adjusted); full table in {out}/ancombc-{group}.tsv")
 
 
 def plot_forest(ds, comparison, top_n=15, q_max=0.05, group=None):
     da = ds.da_by[group] if group else ds.da
     df = da[da["comparison"] == comparison]
-    df = df.reindex(df["log_fold_change"].abs().sort_values(ascending=False).index).head(top_n)
-    df = df.sort_values("log_fold_change")
+    df = df.reindex(df["log2_fold_change"].abs().sort_values(ascending=False).index).head(top_n)
+    df = df.sort_values("log2_fold_change")
     sig = df["q"] < q_max
-    color = np.where(~sig, NS, np.where(df["log_fold_change"] > 0, UP, DOWN))
+    color = np.where(~sig, NS, np.where(df["log2_fold_change"] > 0, UP, DOWN))
     fig, ax = plt.subplots(figsize=(6.5, 0.32 * len(df) + 1.4))
     y = np.arange(len(df))
-    ax.hlines(y, df["log_fold_change"] - 1.96 * df["se"], df["log_fold_change"] + 1.96 * df["se"], color=color, lw=1.6)
-    ax.scatter(df["log_fold_change"], y, color=color, s=36, zorder=3)
+    ax.hlines(y, df["log2_fold_change"] - 1.96 * df["se"], df["log2_fold_change"] + 1.96 * df["se"], color=color, lw=1.6)
+    ax.scatter(df["log2_fold_change"], y, color=color, s=36, zorder=3)
     ax.axvline(0, color="black", lw=0.8)
     ax.set_yticks(y); ax.set_yticklabels(df["taxon"])
-    ax.set_xlabel("Log-fold change (ln), 95% CI"); ax.set_ylabel("")
+    ax.set_xlabel("Log2 fold change, 95% CI"); ax.set_ylabel("")
     ax.set_title(f"{comparison}: {sig.sum()} of {len(df)} shown with q < {q_max:g}")
     save_and_show(fig, ds, "forest", comparison=comparison, top=top_n, q=f"{q_max:g}")
 
