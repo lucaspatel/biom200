@@ -585,12 +585,14 @@ def plot_pcoa(ds, metric="bray_curtis", color_by=None, axes="PCo1 vs PCo2", conn
                   **({"connect": connect} if connect else {}), **({"labels": True} if label_points else {}))
 
 
-def explore_pcoa(ds, connect=None):
+def explore_pcoa(ds, connect=None, labels=None):
+    """Interactive PCoA. Point labels default to on when samples are connected (e.g. two nostrils per person)."""
+    labels = bool(connect) if labels is None else labels
     widgets.interact(plot_pcoa, ds=widgets.fixed(ds), metric=dropdown(ds.beta_metrics, "bray_curtis", "Metric"),
                      color_by=dropdown(ds.categorical, ds.group, "Colour by"),
                      axes=dropdown(["PCo1 vs PCo2", "PCo1 vs PCo3", "PCo2 vs PCo3"], "PCo1 vs PCo2", "Axes"),
                      connect=widgets.fixed(connect),
-                     label_points=widgets.Checkbox(value=False, description=f"Label {ds.subject}"))
+                     label_points=widgets.Checkbox(value=labels, description=f"Label {ds.subject}"))
 
 
 # ---------------------------------------------------------------------------------------------------- differential abundance
