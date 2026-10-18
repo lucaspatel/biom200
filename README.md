@@ -13,9 +13,8 @@ Both use the functions in `scripts/biom200.py`.
 [![Open in GitHub Codespaces](https://github.com/codespaces/badge.svg)](https://codespaces.new/lucaspatel/biom200?quickstart=1)
 
 1. Click the button above (sign in to GitHub if asked). The first start takes a few minutes.
-2. `biom200_microbiome.ipynb` opens automatically. When asked for a kernel, choose **QIIME 2 2026.7**.
-3. Download your feature table, sample information, and taxonomy from [Qiita](https://qiita.ucsd.edu), then drag them onto the `data` folder in the file explorer.
-4. Run the notebook from the top.
+2. `biom200_microbiome.ipynb` opens automatically; `class_nasal_microbiome.ipynb` is next to it. When asked for a kernel, choose **QIIME 2 2026.7**.
+3. Run the notebook from the top. The example and class data are already in `data/`; to analyze other data, download it from [Qiita](https://qiita.ucsd.edu) and drag it onto the `data` folder.
 
 When you finish, stop the codespace (**Codespaces** menu → **Stop Current Codespace**) to save your free monthly hours. Your files are kept until you delete the codespace.
 
