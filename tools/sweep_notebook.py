@@ -7,6 +7,7 @@ QIIME 2 environment:
 
     python tools/sweep_notebook.py 02_nasal-analyses.ipynb
     python tools/sweep_notebook.py 01_introduction.ipynb --set 'TREE = None'
+    python tools/sweep_notebook.py 01_introduction.ipynb --no-sweep   # each control at its default only, for timing
 
 Exits non-zero on the first error.
 """
@@ -24,9 +25,15 @@ _plt.show = lambda *a, **k: _plt.close("all")
 import ipywidgets as _w
 
 
+NO_SWEEP = False
+
+
 def _sweep(f, **kw):
     base = {k: v.value for k, v in kw.items()}
     combos = [dict(base)]
+    if NO_SWEEP:
+        f(**base)
+        return
     for k, v in kw.items():
         if isinstance(v, _w.Dropdown):
             combos += [{**base, k: o} for o in v.options if o != base[k]]
@@ -50,6 +57,7 @@ _m.widgets.interact = _sweep
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("notebook")
+    ap.add_argument("--no-sweep", action="store_true", help="call each plot once with its default controls")
     ap.add_argument("--set", action="append", default=[], metavar="'NAME = value'",
                     help="replace the line assigning NAME in the notebook's code (repeatable)")
     a = ap.parse_args()
@@ -57,6 +65,7 @@ def main():
     cells = [c for c in json.load(open(a.notebook))["cells"] if c["cell_type"] == "code"]
     env = {"__name__": "__main__"}
     exec(STUB, env)
+    env["NO_SWEEP"] = a.no_sweep
     t0 = time.time()
     for i, c in enumerate(cells):
         src = "".join(c["source"])
