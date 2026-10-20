@@ -20,9 +20,21 @@ Reference: Caporaso et al. 2011, *Genome Biol*, https://doi.org/10.1186/gb-2011-
 | File | Contents |
 |---|---|
 | `16596_feature-table.biom` | Deblur feature table (16S V4, 150 nt ASVs), swabs and blanks |
+| `16596_feature-table.biom` | Deblur feature table (16S V4, 150 nt ASVs), swabs and blanks |
 | `16596_sample_information.tsv` | Sample information |
 | `16596_taxonomy.tsv` | Greengenes2 taxonomy for these ASVs |
 | `16596_tree.nwk` | Greengenes2 phylogeny pruned to these ASVs |
 
 The remaining files (rarefied table, Faith's PD, UniFrac distances, demultiplexing statistics) are Qiita outputs kept
 for reference; the notebook computes its own. Sample labels were corrected against the lab's plate map, and participants are identified only by codes (P01–P18).
+
+## `class2/`: Study 2, nostril and tongue swabs before and after eating (Qiita study 16596)
+
+| File | Contents |
+|---|---|
+| `16596_feature-table.biom` | Deblur feature table (16S V4, 150 nt ASVs), swabs and blanks |
+| `16596_sample_information.tsv` | Sample information: 14 participants × (left nostril, right nostril, tongue) × (pre-eating, post-eating). Sample names are Qiita's (`16596.` followed by the tube ID without its leading zero). |
+| `16596_taxonomy.tsv` | Greengenes2 taxonomy for these ASVs |
+| `16596_tree.nwk` | Greengenes2 phylogeny pruned to these ASVs |
+
+The rarefied table, Faith's PD, and demultiplexing statistics are Qiita outputs kept for reference; the notebook computes its own. Four nostril swabs yielded no reads and are absent from the table. Participant codes match Study 1 (P19 is new to Study 2).

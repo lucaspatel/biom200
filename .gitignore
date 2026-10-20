@@ -3,7 +3,9 @@ data/*
 !data/README.md
 !data/mp/
 !data/class/
+!data/class2/
 data/class/original/
+data/class2/original/
 results/
 .ipynb_checkpoints/
 __pycache__/

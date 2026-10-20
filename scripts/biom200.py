@@ -179,6 +179,38 @@ def add_metadata_column(ds, name, values):
     print(ds.meta[name].value_counts().to_string())
 
 
+def subset_dataset(ds, name, keep, group=None):
+    """A copy of `ds` restricted to the samples where `keep` is True (a boolean Series, or a function of ds.meta).
+
+    Results already on `ds` (composition, rarefaction curves, alpha and beta diversity) are carried over, so the
+    subset uses the same rarefied table; ordinations are recomputed for the subset and differential abundance is reset.
+    """
+    keep = keep(ds.meta) if callable(keep) else keep
+    ids = ds.meta.index[pd.Series(keep, index=ds.meta.index).fillna(False).astype(bool)]
+    sub = SimpleNamespace(**vars(ds))
+    sub.name, sub.group = name, group or ds.group
+    sub.meta = ds.meta.loc[ids]
+    sub.meta = sub.meta.loc[:, sub.meta.notna().any()]
+    sub.md = as_metadata(sub.meta)
+    sub.table = feature_table.methods.filter_samples(table=ds.table, metadata=sub.md).filtered_table
+    sub.sample_counts = ds.sample_counts.loc[ids]
+    sub.categorical = categorical_columns(sub.meta, sub.group, sub.subject)
+    if hasattr(ds, "collapsed"):
+        sub.collapsed = {k: v.loc[ids] for k, v in ds.collapsed.items()}
+        sub.rel_at = {k: v.loc[ids] for k, v in ds.rel_at.items()}
+    if hasattr(ds, "curves"):
+        sub.counts, sub.depth, sub.curves = ds.counts.loc[ids], ds.depth.loc[ids], ds.curves[ids]
+    if hasattr(ds, "alpha"):
+        sub.alpha = ds.alpha.loc[ds.alpha.index.intersection(ids)]
+        sub.dms = {m: d.filter([i for i in ids if i in d]) for m, d in ds.dms.items()}
+        sub.pcoas = {m: pcoa(d, method="fsvd", number_of_dimensions=3) for m, d in sub.dms.items()}
+        sub.permanova_cache = {}
+    sub.da_by = {}
+    sub.__dict__.pop("da", None)
+    print(f"{name}: {len(ids)} samples" + (f", {len(sub.alpha)} after rarefaction" if hasattr(sub, "alpha") else ""))
+    return sub
+
+
 # ---------------------------------------------------------------------------------------------------- controls
 def plot_controls(ds, level="Genus", top_n=10):
     """Read depth of controls vs samples, and what the controls contain compared with the samples."""
@@ -412,10 +444,17 @@ def add_diversity(ds, depth=None, save_qzv=False):
     return ds.alpha.join(ds.meta[ds.group]).groupby(ds.group).agg(["mean", "std"]).round(2)
 
 
-def plot_alpha(ds, metric="shannon", group=None):
-    """Box plot of an alpha metric by group, treating every sample as independent."""
+def plot_alpha(ds, metric="shannon", group=None, average_by=None):
+    """Box plot of an alpha metric by group, treating every sample as independent, or with `average_by` (e.g. the
+    participant), one point per participant: the mean of their samples, so each person counts once."""
     group = group or ds.group
     df = ds.alpha[[metric]].join(ds.meta[group].astype(str))
+    if average_by:
+        df = df.join(ds.meta[average_by].astype(str).rename("_by"))
+        if (df.groupby("_by")[group].nunique() > 1).any():
+            print(f"{group} varies within {average_by}; averaging per {average_by} needs one {group} per {average_by}.")
+            return
+        df = df.groupby("_by").agg({metric: "mean", group: "first"})
     pal = colors_for(ds, group)
     order = sorted(df[group].unique())
     fig, ax = plt.subplots(figsize=(1.3 * len(order) + 2.5, 4))
@@ -426,14 +465,15 @@ def plot_alpha(ds, metric="shannon", group=None):
     groups = [g[metric].values for _, g in df.groupby(group)]
     test = stats.mannwhitneyu(*groups) if len(groups) == 2 else stats.kruskal(*groups)
     name = "Mann–Whitney" if len(groups) == 2 else "Kruskal–Wallis"
-    ax.set_title(f"{metric.replace('_', ' ')} by {group}\n{name} p = {test.pvalue:.3g}")
-    ax.set_xlabel(""); ax.set_ylabel(metric.replace("_", " "))
-    save_and_show(fig, ds, "alpha", metric=metric, by=group)
+    unit = f"{average_by}s" if average_by else "samples"
+    ax.set_title(f"{metric.replace('_', ' ')} by {group} ({len(df)} {unit})\n{name} p = {test.pvalue:.3g}")
+    ax.set_xlabel(""); ax.set_ylabel(metric.replace("_", " ") + (f", mean per {average_by}" if average_by else ""))
+    save_and_show(fig, ds, "alpha", metric=metric, by=group, **({"per": average_by} if average_by else {}))
 
 
-def explore_alpha(ds):
+def explore_alpha(ds, group=None, average_by=None):
     widgets.interact(plot_alpha, ds=widgets.fixed(ds), metric=dropdown(ds.alpha_metrics, "shannon", "Metric"),
-                     group=dropdown(ds.categorical, ds.group, "Group by"))
+                     group=dropdown(ds.categorical, group or ds.group, "Group by"), average_by=widgets.fixed(average_by))
 
 
 def plot_paired_alpha(ds, metric="shannon", group=None, pair_by=None):
@@ -501,12 +541,17 @@ def explore_distance_matrix(ds):
                      group=dropdown(ds.categorical, ds.group, "Group by"))
 
 
-def plot_within_between(ds, metric="bray_curtis", by=None):
-    """Distances between samples from the same subject vs from different subjects."""
+def plot_within_between(ds, metric="bray_curtis", by=None, across=None):
+    """Distances between samples from the same subject vs from different subjects. With `across` (e.g. the study),
+    only pairs of samples that differ in that column are compared, e.g. one sample from each of two time points."""
     by = by or ds.subject
     dm = ds.dms[metric]
     lab = ds.meta.loc[list(dm.ids), by].astype(str).values
     iu = np.triu_indices(len(lab), k=1)
+    if across:
+        acr = ds.meta.loc[list(dm.ids), across].astype(str).values
+        keep = acr[iu[0]] != acr[iu[1]]
+        iu = (iu[0][keep], iu[1][keep])
     d = dm.data[iu]
     same = lab[iu[0]] == lab[iu[1]]
     df = pd.DataFrame({"distance": d, "pair": np.where(same, f"same {by}", f"different {by}")})
@@ -520,14 +565,73 @@ def plot_within_between(ds, metric="bray_curtis", by=None):
     if same.sum() and (~same).sum():
         test = stats.mannwhitneyu(d[same], d[~same], alternative="less")
         sub = f"\n{same.sum()} same vs {(~same).sum()} different pairs; one-sided Mann–Whitney p = {test.pvalue:.3g}"
-    ax.set_title(f"{metric.replace('_', ' ')} distance{sub}", fontsize=10)
+    ax.set_title(f"{metric.replace('_', ' ')} distance{' across ' + across if across else ''}{sub}", fontsize=10)
     ax.set_xlabel(""); ax.set_ylabel(f"{metric.replace('_', ' ')} distance")
-    save_and_show(fig, ds, "within-between", metric=metric, by=by)
+    save_and_show(fig, ds, "within-between", metric=metric, by=by, **({"across": across} if across else {}))
 
 
-def explore_within_between(ds, by=None):
+def explore_within_between(ds, by=None, across=None):
     widgets.interact(plot_within_between, ds=widgets.fixed(ds),
-                     metric=dropdown(ds.beta_metrics, "bray_curtis", "Metric"), by=widgets.fixed(by or ds.subject))
+                     metric=dropdown(ds.beta_metrics, "bray_curtis", "Metric"), by=widgets.fixed(by or ds.subject),
+                     across=widgets.fixed(across))
+
+
+def plot_change(ds, metric="bray_curtis", change=None, split=None, baseline=None):
+    """How far each subject's community moves between the two levels of `change` (e.g. before vs after eating),
+    separately for each level of `split` (e.g. body site). Optionally add a `baseline`: the distance between two
+    samples of the same subject taken at the same time that differ only in `baseline` (e.g. left vs right nostril).
+    One point per subject per comparison (the mean of its pairs); grey lines join the same subject."""
+    dm = ds.dms[metric]
+    ids = list(dm.ids)
+    m = ds.meta.loc[ids, [ds.subject, change, split] + ([baseline] if baseline else [])].astype(str)
+    rows = []
+    for a in range(len(ids)):
+        for b in range(a + 1, len(ids)):
+            x, y = m.iloc[a], m.iloc[b]
+            if x[ds.subject] != y[ds.subject] or x[split] != y[split]:
+                continue
+            same_base = not baseline or x[baseline] == y[baseline]
+            if x[change] != y[change] and same_base:
+                kind = f"{x[split]}\nacross {change.replace('_', ' ')}"
+            elif x[change] == y[change] and not same_base:
+                kind = f"{x[split]}\nacross {baseline}, same time"
+            else:
+                continue
+            rows.append({"subject": x[ds.subject], "comparison": kind, "distance": dm.data[a, b]})
+    if not rows:
+        print("No pairs of samples from the same subject to compare.")
+        return
+    df = pd.DataFrame(rows).groupby(["subject", "comparison"], as_index=False)["distance"].mean()
+    order = sorted(df["comparison"].unique(), key=lambda k: ("same time" in k, k))
+    wide = df.pivot(index="subject", columns="comparison", values="distance")[order]
+    fig, ax = plt.subplots(figsize=(1.6 * len(order) + 2.5, 4.4))
+    for _, r in wide.iterrows():
+        ax.plot(range(len(order)), r.values, color="#BBBBBB", lw=0.8, zorder=1)
+    pal = sns.color_palette("deep", len(order))
+    for k, comp in enumerate(order):
+        ax.scatter(np.full(wide[comp].notna().sum(), k), wide[comp].dropna(), color=pal[k], s=36, zorder=2)
+        ax.hlines(wide[comp].median(), k - 0.25, k + 0.25, color="black", lw=2, zorder=3)
+    ax.set_xticks(range(len(order))); ax.set_xticklabels(order)
+    ax.set_xlim(-0.5, len(order) - 0.5)
+    ax.set_ylabel(f"{metric.replace('_', ' ')} distance, mean per {ds.subject}")
+    ax.set_title(f"Change within each {ds.subject} ({metric.replace('_', ' ')}); black bar = median")
+    save_and_show(fig, ds, "change", metric=metric, change=change, split=split,
+                  **({"baseline": baseline} if baseline else {}))
+    tests = []
+    for i in range(len(order)):
+        for j in range(i + 1, len(order)):
+            pair = wide[[order[i], order[j]]].dropna()
+            if len(pair) >= 2:
+                p = stats.wilcoxon(pair.iloc[:, 0], pair.iloc[:, 1]).pvalue
+                tests.append({"comparison": f"{order[i]} vs {order[j]}".replace("\n", " "),
+                              f"{ds.subject}s": len(pair), "Wilcoxon signed-rank p": round(p, 4)})
+    if tests:
+        print(pd.DataFrame(tests).to_string(index=False))
+
+
+def explore_change(ds, change=None, split=None, baseline=None):
+    widgets.interact(plot_change, ds=widgets.fixed(ds), metric=dropdown(ds.beta_metrics, "bray_curtis", "Metric"),
+                     change=widgets.fixed(change), split=widgets.fixed(split), baseline=widgets.fixed(baseline))
 
 
 def run_permanova(ds, metric, column):
@@ -585,11 +689,11 @@ def plot_pcoa(ds, metric="bray_curtis", color_by=None, axes="PCo1 vs PCo2", conn
                   **({"connect": connect} if connect else {}), **({"labels": True} if label_points else {}))
 
 
-def explore_pcoa(ds, connect=None, labels=None):
+def explore_pcoa(ds, connect=None, labels=None, color_by=None):
     """Interactive PCoA. Point labels default to on when samples are connected (e.g. two nostrils per person)."""
     labels = bool(connect) if labels is None else labels
     widgets.interact(plot_pcoa, ds=widgets.fixed(ds), metric=dropdown(ds.beta_metrics, "bray_curtis", "Metric"),
-                     color_by=dropdown(ds.categorical, ds.group, "Colour by"),
+                     color_by=dropdown(ds.categorical, color_by or ds.group, "Colour by"),
                      axes=dropdown(["PCo1 vs PCo2", "PCo1 vs PCo3", "PCo2 vs PCo3"], "PCo1 vs PCo2", "Axes"),
                      connect=widgets.fixed(connect),
                      label_points=widgets.Checkbox(value=labels, description=f"Label {ds.subject}"))
@@ -598,7 +702,8 @@ def explore_pcoa(ds, connect=None, labels=None):
 # ---------------------------------------------------------------------------------------------------- differential abundance
 def add_differential_abundance(ds, min_prevalence=0.25, reference=None, group=None, covariates=(), pseudocount=1):
     """ANCOM-BC (scikit-bio) on genus-level counts for `group` (default ds.group), optionally adjusting for
-    covariates such as the participant in a paired design. A pseudocount replaces zeros, which ANCOM-BC requires."""
+    covariates. A pseudocount replaces zeros, which ANCOM-BC requires. Avoid a participant covariate when each
+    participant has only a few samples: the model is then nearly saturated and reports many false positives."""
     group = group or ds.group
     g = ds.collapsed["Genus"]
     g = g.loc[:, (g > 0).mean() >= min_prevalence]
@@ -659,3 +764,233 @@ def explore_forest(ds, group=None):
                      top_n=slider(5, 40, 15, "Genera shown"),
                      q_max=widgets.FloatLogSlider(value=0.05, base=10, min=-4, max=0, step=0.25, description="q cut-off",
                                                   continuous_update=False, style={"description_width": "initial"}))
+
+
+# ---------------------------------------------------------------------------------------------------- one participant
+def sample_labels(ds, ids, label_by):
+    """Readable sample labels from metadata columns, e.g. 'nostril left pre eating' (N/A values are skipped)."""
+    m = ds.meta.loc[ids, list(label_by)].astype(str)
+    return m.apply(lambda r: " ".join(v.replace("_", " ") for v in r if v not in ("N/A", "nan", "")), axis=1)
+
+
+def plot_participant(ds, participant, compare="none", metric="bray_curtis", level="Genus", top_n=10, by=None,
+                     label_by=None):
+    """One participant's samples (and optionally a second participant's) against the rest of the study: composition
+    next to the study mean for each `by` group, position in the PCoA, and a table of diversity and similarity."""
+    from IPython.display import display
+    by, label_by = by or ds.group, label_by or [by or ds.group]
+    who = ds.meta[ds.subject].astype(str)
+    people = [participant] + ([compare] if compare not in (None, "none", participant) else [])
+    mine = {p: ds.meta.index[who == p] for p in people}
+    if not len(mine[participant]):
+        print(f"No samples for {participant}. Participants in this dataset: {', '.join(sorted(who.unique()))}")
+        return
+    grp = ds.meta[by].astype(str)
+
+    # composition: each person's samples, then the study mean for each group they were sampled in
+    rel = ds.rel_at[level]
+    blocks, names = [], []
+    for p in people:
+        lab = sample_labels(ds, mine[p], label_by)
+        lab = lab.sort_values()
+        blocks.append(rel.loc[lab.index].set_axis([f"{p}: {l}" for l in lab]))
+    groups = sorted(grp.loc[mine[participant]].unique())
+    blocks.append(pd.DataFrame({f"study mean: {g}": rel.loc[grp == g].mean() for g in groups}).T)
+    df = pd.concat(blocks)
+    top = df.mean().sort_values(ascending=False).index[:top_n]
+    df = df[top].assign(Other=(1 - df[top].sum(axis=1)).clip(lower=0))
+
+    fig, (ax, ax2) = plt.subplots(1, 2, figsize=(14, 5), gridspec_kw={"width_ratios": [3, 2]})
+    colors = list(sns.color_palette("tab20", 20)[:len(top)]) + [(0.85, 0.85, 0.85)]
+    df.plot.bar(stacked=True, width=0.85, color=colors, ax=ax, legend=False, linewidth=0)
+    ax.set_ylim(0, 1); ax.set_ylabel("Relative abundance"); ax.set_xlabel("")
+    ax.set_xticklabels(df.index, rotation=60, ha="right", fontsize=8)
+    ax.set_title(f"{level}-level composition: {' and '.join(people)} vs the study mean")
+    ax.legend(*ax.get_legend_handles_labels(), bbox_to_anchor=(1.01, 1), loc="upper left", fontsize=7, title=level)
+
+    # PCoA: everyone in light colours by group, the selected people on top
+    pc = ds.pcoas[metric]
+    xy = pc.samples.iloc[:, :2]
+    expl = pc.proportion_explained * 100
+    pal = colors_for(ds, by)
+    for g, c in pal.items():
+        ids = xy.index[grp.loc[xy.index] == g]
+        ax2.scatter(xy.loc[ids].iloc[:, 0], xy.loc[ids].iloc[:, 1], color=c, alpha=0.4, s=25, label=g, linewidths=0)
+    for p, marker in zip(people, ["o", "s"]):
+        ids = xy.index.intersection(mine[p])
+        ax2.scatter(xy.loc[ids].iloc[:, 0], xy.loc[ids].iloc[:, 1], color=[pal[v] for v in grp.loc[ids]], s=70,
+                    marker=marker, edgecolor="black", linewidth=1.2, label=p, zorder=3)
+        for sid in ids:
+            short = sample_labels(ds, [sid], [c for c in label_by if c != by] or label_by).iloc[0]
+            ax2.annotate(short, xy.loc[sid].iloc[:2], xytext=(4, 3), textcoords="offset points", fontsize=6.5)
+    ax2.set_aspect("equal", adjustable="datalim")
+    ax2.set_xticks([]); ax2.set_yticks([])
+    ax2.set_xlabel(f"PCo1 ({expl.iloc[0]:.0f}%)"); ax2.set_ylabel(f"PCo2 ({expl.iloc[1]:.0f}%)")
+    ax2.set_title(f"{metric.replace('_', ' ')} PCoA")
+    ax2.legend(bbox_to_anchor=(1.02, 1), loc="upper left", fontsize=8)
+    plt.tight_layout()
+    save_and_show(fig, ds, "participant", participant=participant, compare=compare, metric=metric, level=level)
+
+    # per-sample readout: depth, diversity (percentile among samples from the same group), and similarity
+    dm = ds.dms[metric]
+    in_dm = set(dm.ids)
+    rows = []
+    for p in people:
+        for sid in sample_labels(ds, mine[p], label_by).sort_values().index:
+            g = grp.loc[sid]
+            row = {"participant": p, "sample": sample_labels(ds, [sid], label_by).loc[sid],
+                   "reads": int(ds.sample_counts.loc[sid].sum())}
+            if sid not in in_dm:
+                row["note"] = "below the rarefaction depth"
+                rows.append(row)
+                continue
+            peers = ds.alpha.index[grp.loc[ds.alpha.index] == g]
+            for a, name in (("observed_features", "ASVs"), ("shannon", "Shannon")):
+                v = ds.alpha.loc[sid, a]
+                row[name] = int(v) if a == "observed_features" else round(v, 2)
+                row[f"{name} pct"] = f"{(ds.alpha.loc[peers, a] < v).mean():.0%}"
+            same_grp = [i for i in dm.ids if grp.loc[i] == g and i != sid]
+            own = [i for i in same_grp if who.loc[i] == p]
+            others = [i for i in same_grp if who.loc[i] != p]
+            d = pd.Series([dm[sid, i] for i in same_grp], index=same_grp)
+            if own:
+                row["to own samples"] = round(d.loc[own].mean(), 2)
+            if others:
+                row["to others (median)"] = round(d.loc[others].median(), 2)
+                closest = d.loc[others].idxmin()
+                row["most similar other sample"] = (f"{who.loc[closest]}: {sample_labels(ds, [closest], label_by).iloc[0]}"
+                                                    f" ({d.loc[closest]:.2f})")
+            if len(people) == 2:
+                q = people[1] if p == participant else participant
+                theirs = [i for i in same_grp if who.loc[i] == q]
+                if theirs:
+                    row["to the other person"] = round(d.loc[theirs].mean(), 2)
+            rows.append(row)
+    print(f"Percentiles (pct) rank each sample's diversity among all samples from the same {by}; distances are "
+          f"{metric.replace('_', ' ')} to samples of the same {by} (0 = identical, 1 = nothing shared).")
+    table = pd.DataFrame(rows).set_index(["participant", "sample"])
+    if "ASVs" in table:
+        table["ASVs"] = table["ASVs"].astype("Int64")
+    display(table.astype(object).where(table.notna(), ""))
+
+    # the genera that set each person apart: mean share in their samples vs the study mean, per group
+    out = []
+    for g in groups:
+        base = rel.loc[grp == g].mean()
+        cols = {f"study mean": base}
+        for p in people:
+            ids = mine[p][grp.loc[mine[p]] == g]
+            if len(ids):
+                cols[p] = rel.loc[ids].mean()
+        t = pd.DataFrame(cols)
+        t = t.loc[t[people[0]].sort_values(ascending=False).index[:top_n]] if people[0] in t else t.head(0)
+        t.index = pd.MultiIndex.from_product([[g], t.index], names=[by, level])
+        out.append(t)
+    print(f"\nMost abundant {level.lower()} in {participant}'s samples, by {by}:")
+    display(pd.concat(out).style.format("{:.1%}"))
+
+
+def explore_participant(ds, participant=None, compare=None, by=None, label_by=None):
+    """Interactive readout for one participant, with an optional second participant for comparison."""
+    people = sorted(ds.meta[ds.subject].astype(str).unique())
+    widgets.interact(plot_participant, ds=widgets.fixed(ds), by=widgets.fixed(by), label_by=widgets.fixed(label_by),
+                     participant=dropdown(people, participant, ds.subject),
+                     compare=dropdown(["none"] + people, compare or "none", "Compare with"),
+                     metric=dropdown(ds.beta_metrics, "bray_curtis", "Metric"),
+                     level=dropdown(list(LEVELS), "Genus", "Level"),
+                     top_n=slider(3, 20, 10, "Taxa shown"))
+
+
+# ---------------------------------------------------------------------------------------------------- combining studies
+def combine_studies(name, parts, *, group, subject, control_col="sample_type", control_values=("control blank",)):
+    """Load several studies as one dataset, matching ASVs by sequence (all must use the same region and read length).
+
+    `parts` maps a study label to (table, metadata, taxonomy) paths. A `study` column records where each sample came
+    from. Phylogenetic metrics are not available because each study comes with its own pruned tree.
+    """
+    tables, metas, taxa_ = [], [], []
+    for label, (table_path, meta_path, tax_path) in parts.items():
+        tables.append(biom.load_table(table_path))
+        m = Metadata.load(meta_path).to_dataframe()
+        metas.append(m.assign(study=label))
+        taxa_.append(pd.read_csv(tax_path, sep="\t", index_col=0)[["Taxon"]])
+    merged = tables[0]
+    for t in tables[1:]:
+        merged = merged.merge(t)
+    meta = pd.concat(metas, join="inner")   # columns shared by every study
+    tax = pd.concat(taxa_)
+    tax = tax[~tax.index.duplicated()]
+    tax.index.name = "Feature ID"
+    out = RESULTS / name
+    out.mkdir(parents=True, exist_ok=True)
+    with biom.util.biom_open(out / "feature-table.biom", "w") as fh:
+        merged.to_hdf5(fh, name)
+    meta.index.name = "sample_name"
+    meta.to_csv(out / "sample_information.tsv", sep="\t")
+    tax.to_csv(out / "taxonomy.tsv", sep="\t")
+    return load_dataset(name, out / "feature-table.biom", out / "sample_information.tsv", out / "taxonomy.tsv",
+                        group=group, subject=subject, control_col=control_col, control_values=control_values)
+
+
+# ---------------------------------------------------------------------------------------------------- classification
+def plot_classifier(ds, target=None, level="Genus", n_trees=500, folds=5, top_n=15, seed=0):
+    """Random forest predicting `target` from relative abundances at `level`. Cross-validation keeps all samples of a
+    subject in the same fold, so the model is always tested on people it has not seen."""
+    from sklearn.ensemble import RandomForestClassifier
+    from sklearn.metrics import confusion_matrix
+    from sklearn.model_selection import GroupKFold, cross_val_predict
+    target = target or ds.group
+    X = ds.rel_at[level]
+    y = ds.meta.loc[X.index, target].astype(str)
+    ok = y.notna() & (y != "nan")
+    X, y = X[ok], y[ok]
+    groups = ds.meta.loc[X.index, ds.subject].astype(str)
+    folds = min(folds, groups.nunique())
+    rf = RandomForestClassifier(n_estimators=n_trees, random_state=seed, n_jobs=-1)
+    pred = cross_val_predict(rf, X, y, groups=groups, cv=GroupKFold(n_splits=folds))
+    acc = (pred == y.values).mean()
+    baseline = y.value_counts(normalize=True).max()
+    labels = sorted(y.unique())
+    cm = pd.DataFrame(confusion_matrix(y, pred, labels=labels), index=labels, columns=labels)
+    imp = pd.Series(rf.fit(X, y).feature_importances_, index=X.columns).sort_values(ascending=False).head(top_n)
+    fig, (ax, ax2) = plt.subplots(1, 2, figsize=(11, 4.2), gridspec_kw={"width_ratios": [2, 3]})
+    sns.heatmap(cm, annot=True, fmt="d", cmap=SEQ_CMAP, cbar=False, ax=ax)
+    ax.set_xlabel("Predicted"); ax.set_ylabel("True")
+    ax.set_title(f"{target}: accuracy {acc:.0%} ({folds}-fold, by {ds.subject})\nalways guessing the commonest class: {baseline:.0%}")
+    imp[::-1].plot.barh(ax=ax2, color="#4C72B0")
+    ax2.set_xlabel("Importance (mean decrease in impurity)"); ax2.set_ylabel("")
+    ax2.set_title(f"Most informative {level.lower()} taxa")
+    plt.tight_layout()
+    save_and_show(fig, ds, "classifier", target=target, level=level)
+
+
+def explore_classifier(ds, target=None):
+    widgets.interact(plot_classifier, ds=widgets.fixed(ds), target=dropdown(ds.categorical, target or ds.group, "Predict"),
+                     level=dropdown(list(LEVELS), "Genus", "Level"), n_trees=widgets.fixed(500), folds=widgets.fixed(5),
+                     top_n=widgets.fixed(15), seed=widgets.fixed(0))
+
+
+# ---------------------------------------------------------------------------------------------------- ASVs behind a result
+def significant_asvs(ds, group=None, q_max=0.05, min_share=0.001):
+    """The ASVs (full sequences, e.g. to BLAST) inside each genus with q < q_max in the ANCOM-BC results for `group`,
+    with their mean relative abundance in each level of `group`. ASVs below `min_share` in every level are omitted."""
+    da = ds.da_by[group] if group else ds.da
+    group = group or ds.group
+    hits = set(da.loc[da["q"] < q_max, "taxon"].str.replace(r" #\d+$", "", regex=True))
+    tax = ds.taxonomy.view(pd.Series)
+    counts = ds.table.view(pd.DataFrame)
+    rel = counts.div(counts.sum(axis=1), axis=0)
+    genus = tax.reindex(rel.columns).fillna("Unassigned").str.split(";").apply(
+        lambda r: short_label(";".join(x.strip() for x in r[:LEVELS["Genus"]])))
+    asvs = genus.index[genus.isin(hits)]
+    if not len(asvs):
+        print("No genera pass the q cut-off.")
+        return None
+    means = rel[asvs].groupby(ds.meta.loc[rel.index, group].astype(str)).mean().T
+    out = pd.DataFrame({"genus": genus[asvs], "taxonomy": tax.reindex(asvs)}).join(means)
+    out = out[means.max(axis=1) >= min_share]
+    out = out.loc[means.loc[out.index].max(axis=1).sort_values(ascending=False).index]
+    out.index.name = "ASV sequence"
+    for seq, r in out.iterrows():
+        print(f">{r['genus']} | " + " | ".join(f"{c} {r[c]:.2%}" for c in means.columns) + f"\n{seq}")
+    return out
